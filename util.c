@@ -1099,7 +1099,7 @@ bool fulltest(const unsigned char *hash, const unsigned char *target)
 			rc = false;
 			break;
 		}
-		if (h32tmp < t32tmp) {
+		if (h32tmp <= t32tmp) {
 			rc = true;
 			break;
 		}
