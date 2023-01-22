@@ -1,4 +1,5 @@
 /*
+ * Copyright 2022-2022 Eric Dorr
  * Copyright 2011-2021 Andrew Smith
  * Copyright 2011-2018 Con Kolivas
  * Copyright 2011-2012 Luke Dashjr
@@ -232,6 +233,17 @@ bool use_curses = true;
 bool use_curses;
 #endif
 bool opt_widescreen;
+bool opt_binarycheck;
+int opt_binary_ones_midstate_min = 90; //90
+int opt_binary_ones_midstate_max = 165; //165
+int opt_binary_ones_merkle_min = 94; //94
+int opt_binary_ones_merkle_max = 168; //168
+int opt_binary_ones_header_min = 202; //202
+int opt_binary_ones_header_max = 323; //323
+int opt_binary_ones_headerFirstChunk_min = 162; //162
+int opt_binary_ones_headerFirstChunk_max = 269; //269
+int opt_binary_ones_headerSecondChunk_min = 25; //25
+int opt_binary_ones_headerSecondChunk_max = 69; //69
 static bool alt_status;
 static bool switch_status;
 static bool opt_submit_stale = true;
@@ -481,6 +493,7 @@ static struct timeval restart_tv_start, update_tv_start;
 cglock_t control_lock;
 pthread_mutex_t stats_lock;
 
+double skip_rate;
 int hw_errors;
 int64_t total_accepted, total_rejected, total_diff1;
 int64_t total_getworks, total_stale, total_discarded;
@@ -2430,6 +2443,39 @@ static struct opt_table opt_config_table[] = {
 	OPT_WITHOUT_ARG("--worktime",
 			opt_set_bool, &opt_worktime,
 			"Display extra work time debug information"),
+	OPT_WITHOUT_ARG("--binarycheck",
+			opt_set_bool, &opt_binarycheck,
+			"Use extra binary check feature (default: on)"),
+	OPT_WITH_ARG("--opt_binary_ones_midstate_min",
+			opt_set_intval, opt_show_intval, &opt_binary_ones_midstate_min,
+			"Number of ones in Midates (min)"),
+	OPT_WITH_ARG("--opt_binary_ones_midstate_max",
+			opt_set_intval, opt_show_intval, &opt_binary_ones_midstate_max,
+			"Number of ones in Midates (max)"),
+	OPT_WITH_ARG("--opt_binary_ones_header_min",
+			opt_set_intval, opt_show_intval, &opt_binary_ones_header_min,
+			"Number of ones in Header (min)"),
+	OPT_WITH_ARG("--opt_binary_ones_header_max",
+			opt_set_intval, opt_show_intval, &opt_binary_ones_header_max,
+			"Number of ones in Header (max)"),
+	OPT_WITH_ARG("--opt_binary_ones_merkle_min",
+			opt_set_intval, opt_show_intval, &opt_binary_ones_merkle_min,
+			"Number of ones in merkle_root (min)"),
+	OPT_WITH_ARG("--opt_binary_ones_merkle_max",
+			opt_set_intval, opt_show_intval, &opt_binary_ones_merkle_max,
+			"Number of ones in merkle_root (max)"),
+	OPT_WITH_ARG("--opt_binary_ones_headerFirstChunk_min",
+			opt_set_intval, opt_show_intval, &opt_binary_ones_headerFirstChunk_min,
+			"Number of ones in first chunk of Header (min)"),
+	OPT_WITH_ARG("--opt_binary_ones_headerFirstChunk_max",
+			opt_set_intval, opt_show_intval, &opt_binary_ones_headerFirstChunk_max,
+			"Number of ones in first chunk of Header (max)"),
+	OPT_WITH_ARG("--opt_binary_ones_headerSecondChunk_min",
+			opt_set_intval, opt_show_intval, &opt_binary_ones_headerSecondChunk_min,
+			"Number of ones in second chunk of Header without nonce (min)"),
+	OPT_WITH_ARG("--opt_binary_ones_headerSecondChunk_max",
+			opt_set_intval, opt_show_intval, &opt_binary_ones_headerSecondChunk_max,
+			"Number of ones in second chunk of Header without nonce (max)"),
 	OPT_ENDTABLE
 };
 
@@ -2935,6 +2981,16 @@ static void gen_gbt_work(struct pool *pool, struct work *work)
 	}
 
 	calc_midstate(pool, work);
+
+    /* if binary checking is enabled */
+    if (opt_binarycheck) {
+        /* binary check of midstate */
+        work->onesMidstate = count1sInMidstate(work->midstate);
+        if (work->onesMidstate > opt_binary_ones_midstate_max || work->onesMidstate < opt_binary_ones_midstate_min) {
+            work->skip = 1;
+        }
+    }
+
 	local_work++;
 	work->pool = pool;
 	work->gbt = true;
@@ -3690,8 +3746,8 @@ static void curses_print_status(void)
 			pool->has_gbt ? "GBT" : "LP", pool->rpc_user);
 	}
 	wclrtoeol(statuswin);
-	cg_mvwprintw(statuswin, 5, 0, " Block: %s...  Diff:%s  Started: %s  Best share: %s   ",
-		     prev_block, block_diff, blocktime, best_share);
+	cg_mvwprintw(statuswin, 5, 0, " Diff:%s  Started: %s  Best share: %s  Skip Rate: %.2f %%",
+		     block_diff, blocktime, best_share, skip_rate);
 	mvwhline(statuswin, 6, 0, '-', linewidth);
 	mvwhline(statuswin, statusy - 1, 0, '-', linewidth);
 #ifdef USE_USBUTILS
@@ -4051,6 +4107,7 @@ share_result(json_t *val, json_t *res, json_t *err, const struct work *work,
 		pool->seq_rejects++;
 		mutex_unlock(&stats_lock);
 
+        
 		applog(LOG_DEBUG, "PROOF OF WORK RESULT: false (booooo)");
 		if (!QUIET) {
 			char where[20];
@@ -4091,7 +4148,7 @@ share_result(json_t *val, json_t *res, json_t *err, const struct work *work,
 				}
 			}
 
-			applog(LOG_NOTICE, "Rejected %s %s %d %s%s %s%s",
+			applog(LOG_DEBUG, "Rejected %s %s %d %s%s %s%s",
 			       hashshow, cgpu->drv->name, cgpu->device_id, where, reason, resubmit ? "(resubmit)" : "", worktime);
 			sharelog(disposition, work);
 		}
@@ -7238,7 +7295,7 @@ static void *stratum_rthread(void *userdata)
 
 			/* Generate a single work item to update the current
 			 * block database */
-			gen_stratum_work(pool, work);
+            gen_stratum_work(pool, work);
 			/* Return value doesn't matter. We're just informing
 			 * that we may need to restart. */
 			test_work_current(work);
@@ -7884,6 +7941,71 @@ bool submit_nonce2_nonce(struct thr_info *thr, struct pool *pool, struct pool *r
 }
 #endif
 
+const unsigned char oneBits[] = {0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4};
+
+int count1s(unsigned char x)
+{
+    unsigned char results;
+    results = oneBits[x&0x0f];
+    results += oneBits[x>>4];
+    return results;
+}
+
+int count1sInMerkle(unsigned char* merkle)
+{
+    int onesMerkle = 0;
+    for(int i = 0; i < 32; i++)
+    {   
+        onesMerkle = onesMerkle + count1s(merkle[i]);
+    }
+    return onesMerkle;
+}
+
+int count1sInHeader(unsigned char* header)
+{
+    int onesHeader = 0;
+    for(int i = 0; i < 112; i++)
+    {   
+        onesHeader = onesHeader + count1s(header[i]);
+    }
+    return onesHeader;
+}
+
+int count1sInFirstChunk(unsigned char* header)
+{
+    int onesHeader = 0;
+    for(int i = 0; i < 64; i++)
+    {   
+        onesHeader = onesHeader + count1s(header[i]);
+    }
+    return onesHeader;
+}
+
+int count1sInSecondChunk(unsigned char* header)
+{
+    int onesHeader = 0;
+    // count from byte 64 to byte 76
+    // Header:
+    // <------------------------------------- FIRST CHUNK --------------------------------------------------->||
+    // Version (4 byte) || Previous Hash (32 byte) || Merkle Root Head (28 byte) || Merkle Root Rail (4 byte) || Timestamp (4 byte) || Bits (4 Byte) || Nonce (4 byte) || Padding (48 byte)
+    // <------------------------------------- MIDSTATE RELEVANT --------------------------------------------->||
+    for(int i = 64; i < 76; i++)
+    {   
+        onesHeader = onesHeader + count1s(header[i]);
+    }
+    return onesHeader;
+}
+
+int count1sInMidstate(unsigned char* midstate)
+{
+    int onesMidstate = 0;
+    for(int i = 0; i < 32; i++)
+    {   
+        onesMidstate = onesMidstate + count1s(midstate[i]);
+    }
+    return onesMidstate;
+}
+
 #ifdef USE_BITMAIN_SOC
 void get_work_by_nonce2(struct thr_info *thr,
 						struct work **work,
@@ -7941,7 +8063,17 @@ static void gen_stratum_work(struct pool *pool, struct work *work)
 
 	/* Generate merkle root */
 	gen_hash(pool->coinbase, merkle_root, pool->coinbase_len);
-	cg_memcpy(merkle_sha, merkle_root, 32);
+
+    /* if binary checking is enabled */
+    if (opt_binarycheck) {
+        /* binary check of merkle_root */
+        work->onesMerkle = count1sInMerkle((unsigned char *)merkle_root);
+        if (work->onesMerkle > opt_binary_ones_merkle_max || work->onesMerkle < opt_binary_ones_merkle_min) {
+            work->skip = 1;
+        }
+    }
+	
+    cg_memcpy(merkle_sha, merkle_root, 32);
 	for (i = 0; i < pool->merkles; i++) {
 		cg_memcpy(merkle_sha + 32, pool->swork.merkle_bin[i], 32);
 		gen_hash(merkle_sha, merkle_root, 64);
@@ -7955,6 +8087,33 @@ static void gen_stratum_work(struct pool *pool, struct work *work)
 	cg_memcpy(work->data, pool->header_bin, 112);
 	cg_memcpy(work->data + 36, merkle_root, 32);
 
+    /* if binary checking is enabled */
+    if (opt_binarycheck) {
+        /* binary check of header */
+        work->onesHeader = count1sInHeader(work->data);
+        if (work->onesHeader > opt_binary_ones_header_max || work->onesHeader < opt_binary_ones_header_min) {
+            work->skip = 1;
+        }
+    }
+
+    /* if binary checking is enabled */
+    if (opt_binarycheck) {
+        /* binary check first chunk of header */
+        work->onesFirstChunk = count1sInFirstChunk(work->data);
+        if (work->onesFirstChunk > opt_binary_ones_headerFirstChunk_max || work->onesFirstChunk < opt_binary_ones_headerFirstChunk_min) {
+            work->skip = 1;
+        }
+    }
+
+    /* if binary checking is enabled */
+    if (opt_binarycheck) {
+        /* binary check second chunk of header */
+        work->onesSecondChunk = count1sInSecondChunk(work->data);
+        if (work->onesSecondChunk > opt_binary_ones_headerSecondChunk_max || work->onesSecondChunk < opt_binary_ones_headerSecondChunk_min) {
+            work->skip = 1;
+        }
+    }
+
 	/* Store the stratum work diff to check it still matches the pool's
 	 * stratum diff when submitting shares */
 	work->sdiff = pool->sdiff;
@@ -7967,7 +8126,6 @@ static void gen_stratum_work(struct pool *pool, struct work *work)
 
 	if (opt_debug) {
 		char *header, *merkle_hash;
-
 		header = bin2hex(work->data, 112);
 		merkle_hash = bin2hex((const unsigned char *)merkle_root, 32);
 		applog(LOG_DEBUG, "Generated stratum merkle %s", merkle_hash);
@@ -7979,6 +8137,14 @@ static void gen_stratum_work(struct pool *pool, struct work *work)
 	}
 
 	calc_midstate(pool, work);
+    /* if binary checking is enabled */
+    if (opt_binarycheck) {
+        /* binary check of midstate */
+        work->onesMidstate = count1sInMidstate(work->midstate);
+        if (work->onesMidstate > opt_binary_ones_midstate_max || work->onesMidstate < opt_binary_ones_midstate_min) {
+            work->skip = 1;
+        }
+    }
 	set_target(work->target, work->sdiff);
 
 	local_work++;
@@ -8083,6 +8249,13 @@ static void gen_solo_work(struct pool *pool, struct work *work)
 	work->coinbase = bin2hex(pool->coinbase, pool->coinbase_len);
 	/* Generate merkle root */
 	gen_hash(pool->coinbase, merkle_root, pool->coinbase_len);
+    /* added by Eric */
+    /* center = 128; range 120-136 full: 100-155 */
+    work->onesMerkle = count1sInMerkle((unsigned char *)merkle_root);
+    if (work->onesMerkle > 155 || work->onesMerkle < 100) {
+        work->skip = 1;
+    }
+    /* END added by Eric */
 	cg_memcpy(merkle_sha, merkle_root, 32);
 	for (i = 0; i < pool->merkles; i++) {
 		unsigned char *merkle_bin;
@@ -8099,6 +8272,14 @@ static void gen_solo_work(struct pool *pool, struct work *work)
 	/* Copy the data template from header_bin */
 	cg_memcpy(work->data, pool->header_bin, 112);
 	cg_memcpy(work->data + 36, merkle_root, 32);
+    
+    /* added by Eric */
+    work->onesHeader = count1sInHeader(work->data);
+    /* center = 270-280, nearly everything 240-300  depending on time; range 255-285 */
+    if (work->onesHeader > 300 || work->onesHeader < 240) {
+        work->skip = 1;
+    }
+    /* END added by Eric */
 
 	work->sdiff = pool->sdiff;
 
@@ -8121,6 +8302,15 @@ static void gen_solo_work(struct pool *pool, struct work *work)
 	}
 
 	calc_midstate(pool, work);
+    
+    /* if binary checking is enabled */
+    if (opt_binarycheck) {
+        /* binary check of midstate */
+        work->onesMidstate = count1sInMidstate(work->midstate);
+        if (work->onesMidstate > opt_binary_ones_midstate_max || work->onesMidstate < opt_binary_ones_midstate_min) {
+            work->skip = 1;
+        }
+    }
 
 	local_work++;
 	work->gbt = true;
@@ -11075,6 +11265,8 @@ begin_bench:
 #endif
 
 	/* Once everything is set up, main() becomes the getwork scheduler */
+    int total_skipped = 0;
+    int total_total = 0;
 	while (42) {
 		int ts, max_staged = max_queue;
 		struct pool *pool;
@@ -11119,8 +11311,33 @@ begin_bench:
 		};
 		if (pool->has_stratum) {
 			if (opt_gen_stratum_work) {
-				gen_stratum_work(pool, work);
-				applog(LOG_DEBUG, "Generated stratum work");
+                // Updated by Eric
+                work->skip = 0;
+                gen_stratum_work(pool, work);
+                total_total = total_total + 1;
+                if (work->skip == 1) {
+                    total_skipped = total_skipped + 1;
+                    skip_rate = ((double)total_skipped / (double)total_total * 100.0);
+                    if(0 == (total_skipped % 100))
+                    {
+                        applog(LOG_DEBUG, "Total skipped: %d (%.2f %%). Due to binary profile.", total_skipped, skip_rate);
+                    }
+                    /*applog(LOG_DEBUG, "(Skip) Number of ones in first chunk: %d", work->onesFirstChunk);
+                    applog(LOG_DEBUG, "(Skip) Number of ones in second chunk: %d", work->onesSecondChunk);
+                    applog(LOG_DEBUG, "(Skip) Number of ones in generated header %d", work->onesHeader);
+                    applog(LOG_DEBUG, "(Skip) Number of ones in generated merkle_root %d", work->onesMerkle);
+                    applog(LOG_DEBUG, "(Skip) Number of ones in generated midstate %d", work->onesMidstate);
+                    applog(LOG_DEBUG, "(Skip) nonce2 %"PRIu64"", work->nonce2);
+                    */
+                    continue;
+                } else {
+                    applog(LOG_DEBUG, "(Mine) Number of ones in first chunk: %d", work->onesFirstChunk);
+                    applog(LOG_DEBUG, "(Mine) Number of ones in second chunk: %d", work->onesSecondChunk);
+                    applog(LOG_DEBUG, "(Mine) Number of ones in generated header %d", work->onesHeader);
+                    applog(LOG_DEBUG, "(Mine) Number of ones in generated merkle_root %d", work->onesMerkle);
+                    applog(LOG_DEBUG, "(Mine) Number of ones in generated midstate %d", work->onesMidstate);
+                }
+				applog(LOG_DEBUG, "Generated stratum work. call stage_work");
 				stage_work(work);
 			}
 			continue;
@@ -11129,6 +11346,23 @@ begin_bench:
 #ifdef HAVE_LIBCURL
 		if (pool->gbt_solo) {
 			gen_solo_work(pool, work);
+            if (work->skip == 1) {
+                total_skipped = total_skipped + 1;
+                skip_rate = ((double)total_skipped / (double)total_total * 100.0);
+                if(0 == (total_skipped % 100))
+                {
+                    applog(LOG_DEBUG, "Total skipped: %d (%.2f %%). Due to binary profile.", total_skipped, skip_rate);
+                }
+                applog(LOG_DEBUG, "(Skip) Number of ones in generated header %d", work->onesHeader);
+                applog(LOG_DEBUG, "(Skip) Number of ones in generated merkle_root %d", work->onesMerkle);
+                applog(LOG_DEBUG, "(Skip) Number of ones in generated midstate %d", work->onesMidstate);
+                applog(LOG_DEBUG, "(Skip) nonce2 %"PRIu64"", work->nonce2);
+                continue;
+            } else {
+                applog(LOG_DEBUG, "(Mine) Number of ones in generated header %d", work->onesHeader);
+                applog(LOG_DEBUG, "(Mine) Number of ones in generated merkle_root %d", work->onesMerkle);
+                applog(LOG_DEBUG, "(Mine) Number of ones in generated midstate %d", work->onesMidstate);
+            }
 			applog(LOG_DEBUG, "Generated GBT SOLO work");
 			stage_work(work);
 			continue;
@@ -11136,6 +11370,19 @@ begin_bench:
 
 		if (pool->has_gbt) {
 			gen_gbt_work(pool, work);
+            if (work->skip == 1) {
+                total_skipped = total_skipped + 1;
+                applog(LOG_DEBUG, "skipping due to binary profile. Total skipped: %d. Skip flag of work is %d", total_skipped,  work->skip);
+                applog(LOG_DEBUG, "(Skip) Number of ones in generated header %d", work->onesHeader);
+                applog(LOG_DEBUG, "(Skip) Number of ones in generated merkle_root %d", work->onesMerkle);
+                applog(LOG_DEBUG, "(Skip) Number of ones in generated midstate %d", work->onesMidstate);
+                applog(LOG_DEBUG, "(Skip) nonce2 %"PRIu64"", work->nonce2);
+                continue;
+            } else {
+                applog(LOG_DEBUG, "(Mine) Number of ones in generated header %d", work->onesHeader);
+                applog(LOG_DEBUG, "(Mine) Number of ones in generated merkle_root %d", work->onesMerkle);
+                applog(LOG_DEBUG, "(Mine) Number of ones in generated midstate %d", work->onesMidstate);
+            }
 			applog(LOG_DEBUG, "Generated GBT work");
 			stage_work(work);
 			continue;

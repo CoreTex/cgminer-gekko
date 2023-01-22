@@ -1497,10 +1497,16 @@ struct work {
 	struct pool	*pool;
 	struct timeval	tv_staged;
 
+    bool        skip;
+    int         onesHeader;
+    int         onesMerkle;
+    int         onesMidstate;
+    int         onesFirstChunk;
+    int         onesSecondChunk;
 	bool		mined;
 	bool		clone;
 	bool		cloned;
-	int		rolltime;
+	int		    rolltime;
 	bool		longpoll;
 	bool		stale;
 	bool		mandatory;
