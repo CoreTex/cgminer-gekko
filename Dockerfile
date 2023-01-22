@@ -18,6 +18,6 @@ MAINTAINER	Eric Dorr <githubcode@mail.ericdorr.de>
 WORKDIR /docker-cgminer-gekko
 COPY --from=builder /docker-cgminer-gekko .
 RUN		    apt-get -y update
-RUN         apt-get -y install curl syslogd
+RUN         apt-get -y install curl
 RUN 		ls -lah
 ENTRYPOINT	["./cgminer"]
