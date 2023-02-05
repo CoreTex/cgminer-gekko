@@ -238,6 +238,8 @@ int opt_binary_ones_midstate_min = 90; //90
 int opt_binary_ones_midstate_max = 165; //165
 int opt_binary_ones_merkle_min = 94; //94
 int opt_binary_ones_merkle_max = 168; //168
+bool opt_binary_ones_merkle_even = false; // mine only even number of ones
+bool opt_binary_ones_merkle_odd = false; // mine only odd number of ones
 int opt_binary_ones_header_min = 202; //202
 int opt_binary_ones_header_max = 323; //323
 int opt_binary_ones_headerFirstChunk_min = 162; //162
@@ -2461,6 +2463,12 @@ static struct opt_table opt_config_table[] = {
 	OPT_WITH_ARG("--opt_binary_ones_merkle_min",
 			opt_set_intval, opt_show_intval, &opt_binary_ones_merkle_min,
 			"Number of ones in merkle_root (min)"),
+	OPT_WITHOUT_ARG("--opt_binary_ones_merkle_even",
+			opt_set_bool, &opt_binary_ones_merkle_even,
+			"Number of ones in merkle_root (only even)"),
+	OPT_WITHOUT_ARG("--opt_binary_ones_merkle_odd",
+			opt_set_bool, &opt_binary_ones_merkle_odd,
+			"Number of ones in merkle_root (only odd)"),
 	OPT_WITH_ARG("--opt_binary_ones_merkle_max",
 			opt_set_intval, opt_show_intval, &opt_binary_ones_merkle_max,
 			"Number of ones in merkle_root (max)"),
@@ -8069,6 +8077,12 @@ static void gen_stratum_work(struct pool *pool, struct work *work)
         /* binary check of merkle_root */
         work->onesMerkle = count1sInMerkle((unsigned char *)merkle_root);
         if (work->onesMerkle > opt_binary_ones_merkle_max || work->onesMerkle < opt_binary_ones_merkle_min) {
+            work->skip = 1;
+        }
+        if ( work->onesMerkle % 2 == 0 && opt_binary_ones_merkle_odd ) {
+            work->skip = 1;
+        }
+        if ( work->onesMerkle % 2 == 1 && opt_binary_ones_merkle_even ) {
             work->skip = 1;
         }
     }
